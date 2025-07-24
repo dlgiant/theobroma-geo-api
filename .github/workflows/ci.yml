@@ -1,0 +1,280 @@
+name: CI - Test, Lint, and Quality Checks
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+env:
+  PYTHON_VERSION: '3.9'
+
+jobs:
+  lint-and-format:
+    name: Code Quality & Formatting
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+        
+    - name: Cache pip dependencies
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+          
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install black isort flake8 mypy
+        
+    - name: Check code formatting with Black
+      run: |
+        echo "Checking code formatting..."
+        black --check --diff *.py
+        
+    - name: Check import sorting with isort
+      run: |
+        echo "Checking import sorting..."
+        isort --check-only --diff *.py
+        
+    - name: Lint with flake8
+      run: |
+        echo "Running flake8 linting..."
+        flake8 *.py --count --select=E9,F63,F7,F82 --show-source --statistics
+        flake8 *.py --count --exit-zero --max-complexity=10 --max-line-length=88 --statistics
+        
+    - name: Type checking with mypy (optional)
+      run: |
+        echo "Running type checks..."
+        mypy --ignore-missing-imports --no-strict-optional *.py || true
+        
+    - name: Check for security issues with bandit
+      run: |
+        pip install bandit
+        bandit -r . --exclude ./.venv || true
+
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    needs: lint-and-format
+    
+    services:
+      postgres:
+        image: postgis/postgis:13-3.1
+        env:
+          POSTGRES_PASSWORD: test_password
+          POSTGRES_USER: test_user
+          POSTGRES_DB: test_theobroma
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+        
+    - name: Cache pip dependencies
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+          
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pytest pytest-asyncio pytest-cov httpx
+        
+    - name: Set up test environment
+      env:
+        DATABASE_URL: postgresql://test_user:test_password@localhost:5432/test_theobroma
+      run: |
+        echo "DATABASE_URL=$DATABASE_URL" >> $GITHUB_ENV
+        
+    - name: Wait for PostgreSQL
+      run: |
+        until PGPASSWORD=test_password psql -h localhost -U test_user -d test_theobroma -c '\q'; do
+          >&2 echo "PostgreSQL is unavailable - sleeping"
+          sleep 1
+        done
+        >&2 echo "PostgreSQL is up - executing command"
+        
+    - name: Initialize test database
+      env:
+        DATABASE_URL: postgresql://test_user:test_password@localhost:5432/test_theobroma
+      run: |
+        python -c "
+        from database import create_tables, test_connection
+        print('Testing database connection...')
+        if test_connection():
+            print('✅ Database connection successful') 
+            create_tables()
+            print('✅ Database tables created')
+        else:
+            print('❌ Database connection failed')
+            exit(1)
+        "
+        
+    - name: Run API tests
+      env:
+        DATABASE_URL: postgresql://test_user:test_password@localhost:5432/test_theobroma
+      run: |
+        # Basic API health check test
+        python -c "
+        import asyncio
+        import sys
+        from fastapi.testclient import TestClient
+        from main import app
+        
+        def test_health_endpoint():
+            client = TestClient(app)
+            response = client.get('/health')
+            assert response.status_code == 200
+            data = response.json()
+            assert 'uptime_seconds' in data
+            print('✅ Health endpoint test passed')
+            
+        def test_farms_endpoint():
+            client = TestClient(app)
+            response = client.get('/farms')
+            assert response.status_code == 200
+            data = response.json()
+            assert 'farms' in data
+            print('✅ Farms endpoint test passed')
+            
+        try:
+            test_health_endpoint()
+            test_farms_endpoint()
+            print('✅ All API tests passed')
+        except Exception as e:
+            print(f'❌ API tests failed: {e}')
+            sys.exit(1)
+        "
+        
+    - name: Run performance tests
+      env:
+        DATABASE_URL: postgresql://test_user:test_password@localhost:5432/test_theobroma
+      run: |
+        # Start API in background for performance testing
+        python -m uvicorn main:app --host 0.0.0.0 --port 8000 &
+        API_PID=$!
+        
+        # Wait for API to start
+        sleep 10
+        
+        # Run performance tests
+        python -c "
+        import requests
+        import sys
+        
+        try:
+            # Test health endpoint
+            response = requests.get('http://localhost:8000/health', timeout=10)
+            if response.status_code == 200:
+                print('✅ Performance test setup successful')
+            else:
+                print(f'❌ Health check failed: {response.status_code}')
+                sys.exit(1)
+        except Exception as e:
+            print(f'❌ Performance test failed: {e}')
+            sys.exit(1)
+        "
+        
+        # Clean up
+        kill $API_PID || true
+
+  build-and-validate:
+    name: Build Docker Image
+    runs-on: ubuntu-latest
+    needs: [lint-and-format, test]
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+      
+    - name: Build Docker image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        push: false
+        tags: theobroma-geo-api:${{ github.sha }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+        
+    - name: Test Docker image
+      run: |
+        docker build -t theobroma-geo-api:test .
+        echo "✅ Docker image built successfully"
+        
+    - name: Scan Docker image for vulnerabilities
+      uses: aquasecurity/trivy-action@master
+      with:
+        image-ref: theobroma-geo-api:test
+        format: 'sarif'
+        output: 'trivy-results.sarif'
+      continue-on-error: true
+      
+    - name: Upload Trivy scan results
+      uses: github/codeql-action/upload-sarif@v2
+      with:
+        sarif_file: 'trivy-results.sarif'
+      continue-on-error: true
+
+  summary:
+    name: Quality Gate Summary
+    runs-on: ubuntu-latest
+    needs: [lint-and-format, test, build-and-validate]
+    if: always()
+    
+    steps:
+    - name: Check CI status
+      run: |
+        echo "## CI Results Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        if [[ "${{ needs.lint-and-format.result }}" == "success" ]]; then
+          echo "✅ **Code Quality & Formatting**: PASSED" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "❌ **Code Quality & Formatting**: FAILED" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        if [[ "${{ needs.test.result }}" == "success" ]]; then
+          echo "✅ **Tests**: PASSED" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "❌ **Tests**: FAILED" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        if [[ "${{ needs.build-and-validate.result }}" == "success" ]]; then
+          echo "✅ **Build & Validation**: PASSED" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "❌ **Build & Validation**: FAILED" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Branch**: ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
+        echo "**Commit**: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+        echo "**Triggered by**: ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY

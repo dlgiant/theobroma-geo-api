@@ -5,14 +5,21 @@
 
 set -e
 
-# Configuration
-REGION="us-east-2"
-DB_INSTANCE_ID="theobroma-geo-db-staging"
-DB_NAME="theobroma_geo_staging"
-DB_USERNAME="theobroma_admin"
-DB_PASSWORD="TheobromaGeo2024!"  # Change this to a secure password
-DB_PORT=5432
-SECURITY_GROUP_NAME="theobroma-geo-db-sg"
+# Configuration - Use environment variables for security
+REGION="${AWS_REGION:-us-east-2}"
+DB_INSTANCE_ID="${DB_INSTANCE_ID:-theobroma-geo-db-staging}"
+DB_NAME="${DB_NAME:-theobroma_geo_staging}"
+DB_USERNAME="${DB_USERNAME:-postgres}"
+DB_PASSWORD="${DB_PASSWORD}"  # REQUIRED: Set this environment variable
+DB_PORT=${DB_PORT:-5432}
+SECURITY_GROUP_NAME="${SECURITY_GROUP_NAME:-theobroma-geo-db-sg}"
+
+# Validate required environment variables
+if [ -z "$DB_PASSWORD" ]; then
+    echo "❌ Error: DB_PASSWORD environment variable is required"
+    echo "💡 Usage: DB_PASSWORD='your-secure-password' ./create-staging-db.sh"
+    exit 1
+fi
 
 echo "🌱 Creating Theobroma Geo API Staging Database on AWS RDS..."
 

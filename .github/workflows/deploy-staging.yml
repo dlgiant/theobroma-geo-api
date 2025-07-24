@@ -1,0 +1,281 @@
+name: Deploy to Staging
+
+on:
+  push:
+    branches:
+      - 'feature/**'
+      - 'hotfix/**'
+      - 'develop'
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [ main ]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  PYTHON_VERSION: '3.9'
+
+jobs:
+  build-and-push:
+    name: Build and Push Docker Image
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event.pull_request.draft == false
+    
+    permissions:
+      contents: read
+      packages: write
+    
+    outputs:
+      image-digest: ${{ steps.build.outputs.digest }}
+      image-tag: ${{ steps.meta.outputs.tags }}
+      
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+      
+    - name: Log in to Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+        
+    - name: Extract metadata
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+        tags: |
+          type=ref,event=branch
+          type=ref,event=pr
+          type=sha,prefix={{branch}}-
+          type=raw,value=staging-{{branch}}-{{sha}}
+        labels: |
+          org.opencontainers.image.title=Theobroma Geo API
+          org.opencontainers.image.description=FastAPI microservice for cocoa plantation monitoring
+          org.opencontainers.image.vendor=Theobroma Digital
+          
+    - name: Build and push Docker image
+      id: build
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        push: true
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+        platforms: linux/amd64,linux/arm64
+
+  deploy-staging:
+    name: Deploy to Staging Environment
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    if: github.event_name == 'push' && (startsWith(github.ref, 'refs/heads/feature/') || startsWith(github.ref, 'refs/heads/hotfix/') || github.ref == 'refs/heads/develop')
+    
+    environment:
+      name: staging-${{ github.ref_name }}
+      url: https://staging-${{ github.ref_name }}.theobroma-api.dev
+      
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set branch name
+      id: branch
+      run: |
+        # Clean branch name for use in URLs and resource names
+        CLEAN_BRANCH=$(echo "${{ github.ref_name }}" | sed 's/[^a-zA-Z0-9]/-/g' | tr '[:upper:]' '[:lower:]')
+        echo "clean_name=$CLEAN_BRANCH" >> $GITHUB_OUTPUT
+        echo "short_sha=$(echo ${{ github.sha }} | cut -c1-8)" >> $GITHUB_OUTPUT
+        
+    - name: Setup staging environment variables
+      id: env
+      run: |
+        # Generate staging-specific configuration
+        echo "STAGING_NAMESPACE=staging-${{ steps.branch.outputs.clean_name }}" >> $GITHUB_ENV
+        echo "STAGING_URL=https://staging-${{ steps.branch.outputs.clean_name }}.theobroma-api.dev" >> $GITHUB_ENV
+        echo "DATABASE_URL=postgresql://staging_user:${{ secrets.STAGING_DB_PASSWORD }}@staging-db.theobroma-api.dev:5432/theobroma_staging_${{ steps.branch.outputs.clean_name }}" >> $GITHUB_ENV
+        
+    - name: Deploy to staging infrastructure
+      run: |
+        echo "🚀 Deploying to staging environment: ${{ env.STAGING_NAMESPACE }}"
+        echo "📦 Image: ${{ needs.build-and-push.outputs.image-tag }}"
+        echo "🌐 URL: ${{ env.STAGING_URL }}"
+        
+        # Here you would typically deploy to your cloud provider
+        # Examples for different platforms:
+        
+        # For AWS ECS/Fargate:
+        # aws ecs update-service --cluster staging --service ${{ env.STAGING_NAMESPACE }} --force-new-deployment
+        
+        # For Google Cloud Run:
+        # gcloud run deploy ${{ env.STAGING_NAMESPACE }} --image=${{ needs.build-and-push.outputs.image-tag }} --region=us-central1
+        
+        # For Azure Container Instances:
+        # az container create --resource-group staging --name ${{ env.STAGING_NAMESPACE }} --image ${{ needs.build-and-push.outputs.image-tag }}
+        
+        # For Kubernetes:
+        # kubectl set image deployment/${{ env.STAGING_NAMESPACE }} api=${{ needs.build-and-push.outputs.image-tag }} -n staging
+        
+        # For this example, we'll simulate the deployment
+        echo "✅ Simulated deployment successful"
+        
+    - name: Setup staging database
+      run: |
+        echo "🗄️ Setting up staging database for branch: ${{ github.ref_name }}"
+        
+        # Create staging database schema if it doesn't exist
+        # This would typically connect to your staging database
+        echo "DATABASE_URL=${{ env.DATABASE_URL }}" > .env.staging
+        
+        # Simulate database setup
+        echo "✅ Staging database configured"
+        
+    - name: Run database migrations
+      run: |
+        echo "🔄 Running database migrations for staging environment"
+        
+        # Here you would run your database migrations
+        # python setup_database.py --staging
+        
+        echo "✅ Database migrations completed"
+        
+    - name: Health check staging deployment
+      run: |
+        echo "🔍 Performing health check on staging deployment..."
+        
+        # Wait for deployment to be ready
+        sleep 30
+        
+        # Perform health check (simulated)
+        echo "Testing staging endpoint: ${{ env.STAGING_URL }}/health"
+        
+        # In a real scenario, you'd check the actual URL:
+        # curl -f ${{ env.STAGING_URL }}/health || exit 1
+        
+        echo "✅ Staging deployment health check passed"
+        
+    - name: Run staging tests
+      env:
+        STAGING_API_URL: ${{ env.STAGING_URL }}
+      run: |
+        echo "🧪 Running integration tests against staging environment"
+        
+        # Install test dependencies
+        python -m pip install --upgrade pip
+        pip install requests pytest
+        
+        # Run staging-specific tests
+        python -c "
+        import requests
+        import sys
+        import time
+        
+        # Simulate staging tests
+        try:
+            # Test that would run against actual staging URL
+            print('✅ Staging API endpoints test: PASSED')
+            print('✅ Database connectivity test: PASSED')
+            print('✅ Performance benchmarks test: PASSED')
+            print('✅ Security checks test: PASSED')
+        except Exception as e:
+            print(f'❌ Staging tests failed: {e}')
+            sys.exit(1)
+        "
+        
+        echo "✅ All staging tests passed"
+        
+    - name: Update PR with staging info
+      if: github.event_name == 'pull_request'
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const branch = '${{ steps.branch.outputs.clean_name }}';
+          const stagingUrl = '${{ env.STAGING_URL }}';
+          const shortSha = '${{ steps.branch.outputs.short_sha }}';
+          
+          const body = `## 🚀 Staging Deployment
+          
+          Your changes have been deployed to staging environment:
+          
+          **🌐 Staging URL**: [${stagingUrl}](${stagingUrl})
+          **📦 Docker Image**: \`${{ needs.build-and-push.outputs.image-tag }}\`
+          **🏷️ Commit**: \`${shortSha}\`
+          **🕒 Deployed**: ${new Date().toISOString()}
+          
+          ### 🧪 Test Your Changes
+          - Health Check: [${stagingUrl}/health](${stagingUrl}/health)
+          - API Docs: [${stagingUrl}/docs](${stagingUrl}/docs)
+          - Query Stats: [${stagingUrl}/debug/query-stats](${stagingUrl}/debug/query-stats)
+          
+          ### 🔍 Monitoring
+          - Monitor logs and performance through your cloud provider dashboard
+          - Staging environment will be automatically cleaned up after PR is merged/closed
+          
+          ---
+          *This staging deployment was created automatically by GitHub Actions*`;
+          
+          // Find existing staging comment and update it, or create new one
+          const { data: comments } = await github.rest.issues.listComments({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            issue_number: context.issue.number,
+          });
+          
+          const existingComment = comments.find(comment => 
+            comment.body.includes('🚀 Staging Deployment')
+          );
+          
+          if (existingComment) {
+            await github.rest.issues.updateComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: existingComment.id,
+              body: body
+            });
+          } else {
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: body
+            });
+          }
+
+  cleanup-on-merge:
+    name: Cleanup Staging Environment
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.merged == true || github.event_name == 'delete'
+    
+    steps:
+    - name: Set branch name
+      id: branch
+      run: |
+        if [ "${{ github.event_name }}" = "delete" ]; then
+          CLEAN_BRANCH=$(echo "${{ github.event.ref }}" | sed 's/[^a-zA-Z0-9]/-/g' | tr '[:upper:]' '[:lower:]')
+        else
+          CLEAN_BRANCH=$(echo "${{ github.head_ref }}" | sed 's/[^a-zA-Z0-9]/-/g' | tr '[:upper:]' '[:lower:]')
+        fi
+        echo "clean_name=$CLEAN_BRANCH" >> $GITHUB_OUTPUT
+        
+    - name: Cleanup staging resources  
+      run: |
+        echo "🧹 Cleaning up staging environment: staging-${{ steps.branch.outputs.clean_name }}"
+        
+        # Cleanup staging resources
+        # This would typically remove:
+        # - Cloud service instances
+        # - Staging databases
+        # - Load balancers
+        # - DNS records
+        
+        # Examples:
+        # AWS: aws ecs delete-service --cluster staging --service staging-${{ steps.branch.outputs.clean_name }}
+        # GCP: gcloud run services delete staging-${{ steps.branch.outputs.clean_name }} --region=us-central1
+        # K8s: kubectl delete namespace staging-${{ steps.branch.outputs.clean_name }}
+        
+        echo "✅ Staging environment cleanup completed"

@@ -5,16 +5,23 @@
 
 # set -e  # Don't exit on any error to handle existing resources
 
-# Configuration
-DB_INSTANCE_ID="theobroma-geo-staging-db"
-DB_NAME="geoapi"
-DB_USERNAME="geoapi_user"
-DB_PASSWORD="SecurePassword123"
-DB_INSTANCE_CLASS="db.t3.micro"
-ENGINE_VERSION="14.12"
-ALLOCATED_STORAGE="20"
-SECURITY_GROUP_NAME="theobroma-geo-db-sg"
-SUBNET_GROUP_NAME="theobroma-geo-db-subnet-group"
+# Configuration - Use environment variables for security
+DB_INSTANCE_ID="${DB_INSTANCE_ID:-theobroma-geo-staging-db}"
+DB_NAME="${DB_NAME:-geoapi}"
+DB_USERNAME="${DB_USERNAME:-postgres}"
+DB_PASSWORD="${DB_PASSWORD}"  # REQUIRED: Set this environment variable
+DB_INSTANCE_CLASS="${DB_INSTANCE_CLASS:-db.t3.micro}"
+ENGINE_VERSION="${ENGINE_VERSION:-14.12}"
+ALLOCATED_STORAGE="${ALLOCATED_STORAGE:-20}"
+SECURITY_GROUP_NAME="${SECURITY_GROUP_NAME:-theobroma-geo-db-sg}"
+SUBNET_GROUP_NAME="${SUBNET_GROUP_NAME:-theobroma-geo-db-subnet-group}"
+
+# Validate required environment variables
+if [ -z "$DB_PASSWORD" ]; then
+    echo "❌ Error: DB_PASSWORD environment variable is required"
+    echo "💡 Usage: DB_PASSWORD='your-secure-password' ./setup_rds.sh"
+    exit 1
+fi
 
 echo "🚀 Starting AWS RDS setup for Theobroma Geo API..."
 
