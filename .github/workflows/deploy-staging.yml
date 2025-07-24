@@ -100,29 +100,165 @@ jobs:
         echo "STAGING_URL=https://staging-${{ steps.branch.outputs.clean_name }}.theobroma-api.dev" >> $GITHUB_ENV
         echo "DATABASE_URL=postgresql://staging_user:${{ secrets.STAGING_DB_PASSWORD }}@staging-db.theobroma-api.dev:5432/theobroma_staging_${{ steps.branch.outputs.clean_name }}" >> $GITHUB_ENV
         
-    - name: Deploy to staging infrastructure
+    - name: Configure AWS credentials for staging
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ secrets.AWS_REGION || 'us-east-2' }}
+        
+    - name: Deploy to AWS ECS Staging
       run: |
         echo "🚀 Deploying to staging environment: ${{ env.STAGING_NAMESPACE }}"
         echo "📦 Image: ${{ needs.build-and-push.outputs.image-tag }}"
         echo "🌐 URL: ${{ env.STAGING_URL }}"
         
-        # Here you would typically deploy to your cloud provider
-        # Examples for different platforms:
+        # Extract first image from multi-line output
+        IMAGE_URI=$(echo "${{ needs.build-and-push.outputs.image-tag }}" | head -n1)
+        echo "Using image: $IMAGE_URI"
         
-        # For AWS ECS/Fargate:
-        # aws ecs update-service --cluster staging --service ${{ env.STAGING_NAMESPACE }} --force-new-deployment
+        # Check if ECS service exists
+        SERVICE_EXISTS=$(aws ecs describe-services \
+          --cluster theobroma-staging \
+          --services ${{ env.STAGING_NAMESPACE }} \
+          --query 'services[0].status' \
+          --output text 2>/dev/null || echo "NOT_FOUND")
+          
+        if [ "$SERVICE_EXISTS" = "NOT_FOUND" ] || [ "$SERVICE_EXISTS" = "INACTIVE" ]; then
+          echo "🆕 Creating new ECS service for staging environment"
+          
+          # Create task definition for new service
+          cat > task-definition.json << EOF
+        {
+          "family": "${{ env.STAGING_NAMESPACE }}-task",
+          "networkMode": "awsvpc",
+          "requiresCompatibilities": ["FARGATE"],
+          "cpu": "256",
+          "memory": "512",
+          "executionRoleArn": "arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/ecsTaskExecutionRole",
+          "containerDefinitions": [
+            {
+              "name": "theobroma-geo-api",
+              "image": "$IMAGE_URI",
+              "portMappings": [
+                {
+                  "containerPort": 8000,
+                  "protocol": "tcp"
+                }
+              ],
+              "essential": true,
+              "environment": [
+                {
+                  "name": "ENVIRONMENT",
+                  "value": "staging"
+                },
+                {
+                  "name": "DATABASE_URL",
+                  "value": "${{ env.DATABASE_URL }}"
+                },
+                {
+                  "name": "LOG_LEVEL",
+                  "value": "DEBUG"
+                }
+              ],
+              "logConfiguration": {
+                "logDriver": "awslogs",
+                "options": {
+                  "awslogs-group": "/ecs/${{ env.STAGING_NAMESPACE }}",
+                  "awslogs-region": "${{ secrets.AWS_REGION || 'us-east-2' }}",
+                  "awslogs-stream-prefix": "ecs"
+                }
+              }
+            }
+          ]
+        }
+        EOF
+          
+          # Register task definition
+          TASK_DEF_ARN=$(aws ecs register-task-definition \
+            --cli-input-json file://task-definition.json \
+            --query 'taskDefinition.taskDefinitionArn' \
+            --output text)
+            
+          echo "✅ Task definition registered: $TASK_DEF_ARN"
+          
+          # Create ECS service
+          aws ecs create-service \
+            --cluster theobroma-staging \
+            --service-name ${{ env.STAGING_NAMESPACE }} \
+            --task-definition $TASK_DEF_ARN \
+            --desired-count 1 \
+            --launch-type FARGATE \
+            --network-configuration "awsvpcConfiguration={subnets=[${{ secrets.SUBNET_IDS }}],securityGroups=[${{ secrets.SECURITY_GROUP_ID }}],assignPublicIp=ENABLED}" \
+            --load-balancers "targetGroupArn=${{ secrets.STAGING_TARGET_GROUP_ARN }},containerName=theobroma-geo-api,containerPort=8000" \
+            --enable-execute-command
+            
+          echo "✅ ECS service created successfully"
+        else
+          echo "🔄 Updating existing ECS service"
+          
+          # Get current task definition
+          CURRENT_TASK_DEF=$(aws ecs describe-services \
+            --cluster theobroma-staging \
+            --services ${{ env.STAGING_NAMESPACE }} \
+            --query 'services[0].taskDefinition' \
+            --output text)
+            
+          # Download current task definition
+          aws ecs describe-task-definition \
+            --task-definition $CURRENT_TASK_DEF \
+            --query taskDefinition > current-task-def.json
+            
+          # Update image in task definition
+          python3 << EOF
+        import json
         
-        # For Google Cloud Run:
-        # gcloud run deploy ${{ env.STAGING_NAMESPACE }} --image=${{ needs.build-and-push.outputs.image-tag }} --region=us-central1
+        with open('current-task-def.json', 'r') as f:
+            task_def = json.load(f)
+            
+        # Remove fields that shouldn't be in the new registration
+        for field in ['taskDefinitionArn', 'revision', 'status', 'requiresAttributes', 'placementConstraints', 'compatibilities', 'registeredAt', 'registeredBy']:
+            task_def.pop(field, None)
+            
+        # Update image
+        for container in task_def['containerDefinitions']:
+            if container['name'] == 'theobroma-geo-api':
+                container['image'] = '$IMAGE_URI'
+                # Update environment variables
+                env_vars = container.get('environment', [])
+                for env_var in env_vars:
+                    if env_var['name'] == 'DATABASE_URL':
+                        env_var['value'] = '${{ env.DATABASE_URL }}'
         
-        # For Azure Container Instances:
-        # az container create --resource-group staging --name ${{ env.STAGING_NAMESPACE }} --image ${{ needs.build-and-push.outputs.image-tag }}
+        with open('updated-task-def.json', 'w') as f:
+            json.dump(task_def, f, indent=2)
+        EOF
+          
+          # Register new task definition
+          NEW_TASK_DEF_ARN=$(aws ecs register-task-definition \
+            --cli-input-json file://updated-task-def.json \
+            --query 'taskDefinition.taskDefinitionArn' \
+            --output text)
+            
+          echo "✅ New task definition registered: $NEW_TASK_DEF_ARN"
+          
+          # Update service with new task definition
+          aws ecs update-service \
+            --cluster theobroma-staging \
+            --service ${{ env.STAGING_NAMESPACE }} \
+            --task-definition $NEW_TASK_DEF_ARN \
+            --force-new-deployment
+            
+          echo "✅ ECS service updated successfully"
+        fi
         
-        # For Kubernetes:
-        # kubectl set image deployment/${{ env.STAGING_NAMESPACE }} api=${{ needs.build-and-push.outputs.image-tag }} -n staging
-        
-        # For this example, we'll simulate the deployment
-        echo "✅ Simulated deployment successful"
+        # Wait for service to reach steady state
+        echo "⏳ Waiting for deployment to stabilize..."
+        aws ecs wait services-stable \
+          --cluster theobroma-staging \
+          --services ${{ env.STAGING_NAMESPACE }}
+          
+        echo "✅ Staging deployment completed successfully"
         
     - name: Setup staging database
       run: |
@@ -262,20 +398,86 @@ jobs:
         fi
         echo "clean_name=$CLEAN_BRANCH" >> $GITHUB_OUTPUT
         
+    - name: Configure AWS credentials for cleanup
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ secrets.AWS_REGION || 'us-east-2' }}
+        
     - name: Cleanup staging resources  
       run: |
         echo "🧹 Cleaning up staging environment: staging-${{ steps.branch.outputs.clean_name }}"
         
-        # Cleanup staging resources
-        # This would typically remove:
-        # - Cloud service instances
-        # - Staging databases
-        # - Load balancers
-        # - DNS records
+        SERVICE_NAME="staging-${{ steps.branch.outputs.clean_name }}"
         
-        # Examples:
-        # AWS: aws ecs delete-service --cluster staging --service staging-${{ steps.branch.outputs.clean_name }}
-        # GCP: gcloud run services delete staging-${{ steps.branch.outputs.clean_name }} --region=us-central1
-        # K8s: kubectl delete namespace staging-${{ steps.branch.outputs.clean_name }}
+        # Check if service exists
+        SERVICE_EXISTS=$(aws ecs describe-services \
+          --cluster theobroma-staging \
+          --services $SERVICE_NAME \
+          --query 'services[0].status' \
+          --output text 2>/dev/null || echo "NOT_FOUND")
+          
+        if [ "$SERVICE_EXISTS" != "NOT_FOUND" ] && [ "$SERVICE_EXISTS" != "INACTIVE" ]; then
+          echo "🗑️ Deleting ECS service: $SERVICE_NAME"
+          
+          # Scale down service to 0
+          aws ecs update-service \
+            --cluster theobroma-staging \
+            --service $SERVICE_NAME \
+            --desired-count 0
+            
+          # Wait for tasks to stop
+          echo "⏳ Waiting for tasks to stop..."
+          aws ecs wait services-stable \
+            --cluster theobroma-staging \
+            --services $SERVICE_NAME
+            
+          # Delete the service
+          aws ecs delete-service \
+            --cluster theobroma-staging \
+            --service $SERVICE_NAME
+            
+          echo "✅ ECS service deleted"
+        else
+          echo "ℹ️ Service $SERVICE_NAME not found or already inactive"
+        fi
+        
+        # Cleanup task definitions (keep last 5 revisions)
+        TASK_FAMILY="${SERVICE_NAME}-task"
+        echo "🧽 Cleaning up old task definitions for family: $TASK_FAMILY"
+        
+        # Get all task definition revisions
+        TASK_ARNS=$(aws ecs list-task-definitions \
+          --family-prefix $TASK_FAMILY \
+          --status ACTIVE \
+          --query 'taskDefinitionArns' \
+          --output text)
+          
+        if [ -n "$TASK_ARNS" ]; then
+          # Convert to array and sort
+          TASK_ARRAY=($TASK_ARNS)
+          TASK_COUNT=${#TASK_ARRAY[@]}
+          
+          if [ $TASK_COUNT -gt 5 ]; then
+            # Deregister old task definitions (keep last 5)
+            TASKS_TO_DELETE=$((TASK_COUNT - 5))
+            for ((i=0; i<TASKS_TO_DELETE; i++)); do
+              echo "Deregistering task definition: ${TASK_ARRAY[i]}"
+              aws ecs deregister-task-definition \
+                --task-definition ${TASK_ARRAY[i]} > /dev/null
+            done
+            echo "✅ Cleaned up $TASKS_TO_DELETE old task definitions"
+          else
+            echo "ℹ️ Only $TASK_COUNT task definitions found, keeping all"
+          fi
+        else
+          echo "ℹ️ No task definitions found for family: $TASK_FAMILY"
+        fi
+        
+        # Cleanup CloudWatch logs (optional - uncomment if needed)
+        # LOG_GROUP="/ecs/$SERVICE_NAME"
+        # aws logs delete-log-group --log-group-name $LOG_GROUP 2>/dev/null || true
+        # echo "✅ CloudWatch log group cleaned up"
         
         echo "✅ Staging environment cleanup completed"

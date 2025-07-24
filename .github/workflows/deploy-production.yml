@@ -1,0 +1,293 @@
+name: Deploy to Production
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment'
+        required: true
+        default: 'production'
+        type: choice
+        options:
+        - production
+        - staging
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: theobroma-geo-api
+  ECS_SERVICE: theobroma-geo-api-service
+  ECS_CLUSTER: theobroma-production
+  ECS_TASK_DEFINITION: theobroma-geo-api-task
+  CONTAINER_NAME: theobroma-geo-api
+
+jobs:
+  build-and-push:
+    name: Build and Push to ECR
+    runs-on: ubuntu-latest
+    
+    outputs:
+      image-uri: ${{ steps.build-image.outputs.image }}
+      image-tag: ${{ steps.image-tag.outputs.tag }}
+      
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Generate image tag
+      id: image-tag
+      run: |
+        if [[ $GITHUB_REF == refs/tags/* ]]; then
+          # Use tag name for tagged releases
+          TAG=${GITHUB_REF#refs/tags/}
+        else
+          # Use branch name and short SHA for branch pushes
+          TAG="${GITHUB_REF_NAME}-$(echo $GITHUB_SHA | cut -c1-8)"
+        fi
+        echo "tag=$TAG" >> $GITHUB_OUTPUT
+        echo "Using image tag: $TAG"
+        
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+        
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v2
+      
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+      
+    - name: Build and push image to ECR
+      id: build-image
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        IMAGE_TAG: ${{ steps.image-tag.outputs.tag }}
+      run: |
+        # Build image
+        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:latest .
+        
+        # Push image to ECR
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+        
+        echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+        echo "✅ Image pushed to ECR: $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+        
+    - name: Scan image for vulnerabilities
+      uses: aquasecurity/trivy-action@master
+      with:
+        image-ref: ${{ steps.build-image.outputs.image }}
+        format: 'sarif'
+        output: 'trivy-results.sarif'
+      continue-on-error: true
+      
+    - name: Upload Trivy scan results
+      uses: github/codeql-action/upload-sarif@v2
+      with:
+        sarif_file: 'trivy-results.sarif'
+      continue-on-error: true
+
+  deploy-production:
+    name: Deploy to Production ECS
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')
+    
+    environment:
+      name: production
+      url: https://api.theobroma.digital
+      
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+        
+    - name: Download current task definition
+      run: |
+        aws ecs describe-task-definition \
+          --task-definition ${{ env.ECS_TASK_DEFINITION }} \
+          --query taskDefinition > task-definition.json
+          
+        echo "✅ Current task definition downloaded"
+        
+    - name: Update task definition with new image
+      id: task-def
+      uses: aws-actions/amazon-ecs-render-task-definition@v1
+      with:
+        task-definition: task-definition.json
+        container-name: ${{ env.CONTAINER_NAME }}
+        image: ${{ needs.build-and-push.outputs.image-uri }}
+        environment-variables: |
+          ENVIRONMENT=production
+          LOG_LEVEL=INFO
+          AWS_REGION=${{ env.AWS_REGION }}
+          
+    - name: Deploy to Amazon ECS service
+      uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+      with:
+        task-definition: ${{ steps.task-def.outputs.task-definition }}
+        service: ${{ env.ECS_SERVICE }}
+        cluster: ${{ env.ECS_CLUSTER }}
+        wait-for-service-stability: true
+        
+    - name: Wait for deployment to stabilize
+      run: |
+        echo "⏳ Waiting for service to reach steady state..."
+        aws ecs wait services-stable \
+          --cluster ${{ env.ECS_CLUSTER }} \
+          --services ${{ env.ECS_SERVICE }}
+        echo "✅ Service deployment completed successfully"
+        
+    - name: Get service details
+      run: |
+        # Get the load balancer URL
+        LOAD_BALANCER_DNS=$(aws ecs describe-services \
+          --cluster ${{ env.ECS_CLUSTER }} \
+          --services ${{ env.ECS_SERVICE }} \
+          --query 'services[0].loadBalancers[0].targetGroupArn' \
+          --output text | xargs -I {} aws elbv2 describe-target-groups \
+          --target-group-arns {} \
+          --query 'TargetGroups[0].LoadBalancerArns[0]' \
+          --output text | xargs -I {} aws elbv2 describe-load-balancers \
+          --load-balancer-arns {} \
+          --query 'LoadBalancers[0].DNSName' \
+          --output text)
+          
+        echo "🌐 Application URL: https://$LOAD_BALANCER_DNS"
+        echo "📦 Deployed Image: ${{ needs.build-and-push.outputs.image-uri }}"
+        echo "🏷️ Image Tag: ${{ needs.build-and-push.outputs.image-tag }}"
+        
+    - name: Run health checks
+      run: |
+        echo "🔍 Running post-deployment health checks..."
+        
+        # Wait for application to be ready
+        sleep 60
+        
+        # Health check endpoint
+        HEALTH_URL="https://api.theobroma.digital/health"
+        echo "Testing health endpoint: $HEALTH_URL"
+        
+        # Retry health check up to 10 times
+        for i in {1..10}; do
+          if curl -f -s "$HEALTH_URL" > /dev/null; then
+            echo "✅ Health check passed (attempt $i)"
+            break
+          else
+            echo "⏳ Health check failed (attempt $i), retrying in 30s..."
+            if [ $i -eq 10 ]; then
+              echo "❌ Health check failed after 10 attempts"
+              exit 1
+            fi
+            sleep 30
+          fi
+        done
+        
+    - name: Run smoke tests
+      run: |
+        echo "🧪 Running production smoke tests..."
+        
+        BASE_URL="https://api.theobroma.digital"
+        
+        # Test critical endpoints
+        endpoints=(
+          "/health"
+          "/farms"
+          "/docs"
+        )
+        
+        for endpoint in "${endpoints[@]}"; do
+          echo "Testing $BASE_URL$endpoint"
+          if curl -f -s "$BASE_URL$endpoint" > /dev/null; then
+            echo "✅ $endpoint: PASSED"
+          else
+            echo "❌ $endpoint: FAILED"
+            exit 1
+          fi
+        done
+        
+        echo "✅ All smoke tests passed"
+        
+    - name: Update deployment status
+      if: always()
+      run: |
+        if [ "${{ job.status }}" == "success" ]; then
+          echo "## 🚀 Production Deployment Successful" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**🌐 Production URL**: https://api.theobroma.digital" >> $GITHUB_STEP_SUMMARY
+          echo "**📦 Image**: ${{ needs.build-and-push.outputs.image-uri }}" >> $GITHUB_STEP_SUMMARY
+          echo "**🏷️ Tag**: ${{ needs.build-and-push.outputs.image-tag }}" >> $GITHUB_STEP_SUMMARY
+          echo "**🕒 Deployed**: $(date -u)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### ✅ Health Checks" >> $GITHUB_STEP_SUMMARY
+          echo "- Health endpoint: PASSED" >> $GITHUB_STEP_SUMMARY
+          echo "- Smoke tests: PASSED" >> $GITHUB_STEP_SUMMARY
+          echo "- Service stability: PASSED" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "## ❌ Production Deployment Failed" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**📦 Image**: ${{ needs.build-and-push.outputs.image-uri }}" >> $GITHUB_STEP_SUMMARY
+          echo "**🕒 Failed at**: $(date -u)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Please check the deployment logs and fix any issues before retrying." >> $GITHUB_STEP_SUMMARY
+        fi
+
+  rollback:
+    name: Rollback on Failure
+    runs-on: ubuntu-latest
+    needs: [build-and-push, deploy-production]
+    if: failure() && needs.deploy-production.result == 'failure'
+    
+    steps:
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+        
+    - name: Rollback to previous version
+      run: |
+        echo "🔄 Initiating rollback to previous stable version..."
+        
+        # Get the previous task definition revision
+        CURRENT_REVISION=$(aws ecs describe-services \
+          --cluster ${{ env.ECS_CLUSTER }} \
+          --services ${{ env.ECS_SERVICE }} \
+          --query 'services[0].taskDefinition' \
+          --output text | grep -o '[0-9]*$')
+          
+        PREVIOUS_REVISION=$((CURRENT_REVISION - 1))
+        
+        if [ $PREVIOUS_REVISION -gt 0 ]; then
+          echo "Rolling back from revision $CURRENT_REVISION to $PREVIOUS_REVISION"
+          
+          # Update service with previous task definition
+          aws ecs update-service \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --service ${{ env.ECS_SERVICE }} \
+            --task-definition ${{ env.ECS_TASK_DEFINITION }}:$PREVIOUS_REVISION
+            
+          # Wait for rollback to complete
+          aws ecs wait services-stable \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --services ${{ env.ECS_SERVICE }}
+            
+          echo "✅ Rollback completed successfully"
+        else
+          echo "❌ No previous revision found for rollback"
+          exit 1
+        fi
