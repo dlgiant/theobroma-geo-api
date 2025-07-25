@@ -17,14 +17,21 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Database configuration
+# Database configuration - Use environment variables
 DB_CONFIG = {
-    "host": "theobroma-geo-db-staging.cjnrvqevfppv.us-east-2.rds.amazonaws.com",
-    "port": 5432,
-    "database": "theobroma_geo_staging",
-    "user": "theobroma_admin",
-    "password": "TheobromaGeo2024!",
+    "host": os.getenv("DB_HOST", "localhost"),
+    "port": int(os.getenv("DB_PORT", "5432")),
+    "database": os.getenv("DB_NAME", "theobroma_geo_dev"),
+    "user": os.getenv("DB_USER", "postgres"),
+    "password": os.getenv("DB_PASSWORD"),
 }
+
+# Validate required environment variables
+if not DB_CONFIG["password"]:
+    logger.error("❌ Error: DB_PASSWORD environment variable is required")
+    logger.error("💡 Usage: DB_PASSWORD='your-password' python test-db-connection.py")
+    logger.error("💡 Or set all DB_* environment variables in your .env file")
+    sys.exit(1)
 
 
 def test_connection():

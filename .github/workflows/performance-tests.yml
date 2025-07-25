@@ -1,0 +1,223 @@
+name: Performance Tests
+
+on:
+  workflow_dispatch:
+    inputs:
+      test_duration:
+        description: 'Test duration in seconds'
+        required: false
+        default: '60'
+        type: string
+      concurrent_users:
+        description: 'Number of concurrent users'
+        required: false
+        default: '10'
+        type: string
+      target_branch:
+        description: 'Branch to test'
+        required: false
+        default: 'main'
+        type: string
+
+env:
+  PYTHON_VERSION: '3.9'
+
+jobs:
+  performance-tests:
+    name: Performance Testing
+    runs-on: ubuntu-latest
+    
+    services:
+      postgres:
+        image: postgis/postgis:13-3.1
+        env:
+          POSTGRES_PASSWORD: test_password
+          POSTGRES_USER: test_user
+          POSTGRES_DB: test_theobroma
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        ref: ${{ github.event.inputs.target_branch || 'main' }}
+      
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+        
+    - name: Cache pip dependencies
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+          
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install locust requests
+        
+    - name: Set up test environment
+      env:
+        DATABASE_URL: postgresql://test_user:test_password@localhost:5432/test_theobroma
+      run: |
+        echo "DATABASE_URL=$DATABASE_URL" >> $GITHUB_ENV
+        
+    - name: Wait for PostgreSQL
+      run: |
+        until PGPASSWORD=test_password psql -h localhost -U test_user -d test_theobroma -c '\q'; do
+          >&2 echo "PostgreSQL is unavailable - sleeping"
+          sleep 1
+        done
+        >&2 echo "PostgreSQL is up - executing command"
+        
+    - name: Initialize test database
+      env:
+        DATABASE_URL: postgresql://test_user:test_password@localhost:5432/test_theobroma
+      run: |
+        python -c "
+        from database import create_tables, test_connection
+        print('Testing database connection...')
+        if test_connection():
+            print('✅ Database connection successful') 
+            create_tables()
+            print('✅ Database tables created')
+        else:
+            print('❌ Database connection failed')
+            exit(1)
+        "
+        
+    - name: Start API server
+      env:
+        DATABASE_URL: postgresql://test_user:test_password@localhost:5432/test_theobroma
+      run: |
+        python -m uvicorn main:app --host 0.0.0.0 --port 8000 &
+        API_PID=$!
+        echo "API_PID=$API_PID" >> $GITHUB_ENV
+        
+        # Wait for API to start
+        sleep 10
+        
+        # Verify API is running
+        curl -f http://localhost:8000/health || (echo "API failed to start" && exit 1)
+        echo "✅ API server started successfully"
+        
+    - name: Create Locust performance test
+      run: |
+        cat > locustfile.py << 'EOF'
+        from locust import HttpUser, task, between
+        import random
+
+        class TheobrimaAPIUser(HttpUser):
+            wait_time = between(1, 3)
+            
+            def on_start(self):
+                """Called when a user starts"""
+                # Test health endpoint first
+                response = self.client.get("/health")
+                if response.status_code != 200:
+                    raise Exception(f"Health check failed: {response.status_code}")
+            
+            @task(3)
+            def get_farms(self):
+                """Test farms endpoint"""
+                self.client.get("/farms")
+            
+            @task(2)
+            def get_trees(self):
+                """Test trees endpoint"""
+                self.client.get("/trees")
+            
+            @task(2)
+            def get_lots(self):
+                """Test lots endpoint"""
+                self.client.get("/lots")
+            
+            @task(1)
+            def get_security_events(self):
+                """Test security events endpoint"""
+                self.client.get("/security-events")
+            
+            @task(1)
+            def get_health(self):
+                """Test health endpoint"""
+                self.client.get("/health")
+            
+            @task(1)
+            def get_metrics(self):
+                """Test metrics endpoint"""
+                self.client.get("/metrics")
+        EOF
+        
+    - name: Run performance tests
+      run: |
+        echo "🚀 Starting performance tests..."
+        echo "Duration: ${{ github.event.inputs.test_duration || '60' }} seconds"
+        echo "Concurrent users: ${{ github.event.inputs.concurrent_users || '10' }}"
+        echo "Target: http://localhost:8000"
+        
+        # Run Locust performance tests
+        locust \
+          --headless \
+          --users ${{ github.event.inputs.concurrent_users || '10' }} \
+          --spawn-rate 2 \
+          --run-time ${{ github.event.inputs.test_duration || '60' }}s \
+          --host http://localhost:8000 \
+          --html performance_report.html \
+          --csv performance_results
+        
+    - name: Analyze results
+      run: |
+        echo "## Performance Test Results" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Test Configuration:**" >> $GITHUB_STEP_SUMMARY
+        echo "- Duration: ${{ github.event.inputs.test_duration || '60' }} seconds" >> $GITHUB_STEP_SUMMARY
+        echo "- Concurrent Users: ${{ github.event.inputs.concurrent_users || '10' }}" >> $GITHUB_STEP_SUMMARY
+        echo "- Branch: ${{ github.event.inputs.target_branch || 'main' }}" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        if [ -f "performance_results_stats.csv" ]; then
+          echo "**Request Statistics:**" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          head -20 performance_results_stats.csv >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        # Check for performance issues
+        if [ -f "performance_results_failures.csv" ]; then
+          FAILURES=$(wc -l < performance_results_failures.csv)
+          if [ $FAILURES -gt 1 ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "⚠️ **$((FAILURES-1)) request failures detected**" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            head -10 performance_results_failures.csv >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi
+        fi
+        
+    - name: Upload performance results
+      uses: actions/upload-artifact@v3
+      with:
+        name: performance-test-results
+        path: |
+          performance_report.html
+          performance_results*.csv
+        retention-days: 30
+        
+    - name: Clean up
+      if: always()
+      run: |
+        if [ ! -z "$API_PID" ]; then
+          kill $API_PID || true
+          echo "✅ API server stopped"
+        fi
