@@ -230,18 +230,41 @@ jobs:
         context: .
         push: false
         tags: theobroma-geo-api:${{ github.sha }}
+        platforms: linux/amd64
         cache-from: type=gha
         cache-to: type=gha,mode=max
+        load: true
         
     - name: Test Docker image
       run: |
-        docker build -t theobroma-geo-api:test .
-        echo "✅ Docker image built successfully"
+        echo "✅ Docker image built successfully with tag: theobroma-geo-api:${{ github.sha }}"
+        
+        # Test that the image can start (basic smoke test)
+        docker run --rm -d \
+          --name test-container \
+          -p 8001:8000 \
+          -e DATABASE_URL="sqlite:///test.db" \
+          theobroma-geo-api:${{ github.sha }}
+        
+        # Wait for container to start
+        sleep 10
+        
+        # Test health endpoint
+        if curl -f http://localhost:8001/health; then
+          echo "✅ Docker container health check passed"
+        else
+          echo "❌ Docker container health check failed"
+          docker logs test-container
+          exit 1
+        fi
+        
+        # Clean up
+        docker stop test-container || true
         
     - name: Scan Docker image for vulnerabilities
       uses: aquasecurity/trivy-action@master
       with:
-        image-ref: theobroma-geo-api:test
+        image-ref: theobroma-geo-api:${{ github.sha }}
         format: 'sarif'
         output: 'trivy-results.sarif'
       continue-on-error: true
