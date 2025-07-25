@@ -5,6 +5,13 @@ on:
     branches: [ main, develop ]
   pull_request:
     branches: [ main, develop ]
+  workflow_dispatch:
+    inputs:
+      run_performance_tests:
+        description: 'Run performance tests'
+        required: false
+        default: false
+        type: boolean
 
 env:
   PYTHON_VERSION: '3.9'
@@ -173,6 +180,7 @@ jobs:
         "
         
     - name: Run performance tests
+      if: github.event_name == 'workflow_dispatch' && github.event.inputs.run_performance_tests == 'true'
       env:
         DATABASE_URL: postgresql://test_user:test_password@localhost:5432/test_theobroma
       run: |
