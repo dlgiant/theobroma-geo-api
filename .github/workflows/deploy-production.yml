@@ -178,6 +178,78 @@ jobs:
           echo "CREATE_SERVICE=false" >> $GITHUB_ENV
         fi
         
+    - name: Create IAM roles for ECS
+      run: |
+        echo "🔍 Creating IAM roles for ECS..."
+        
+        # Create ECS Task Execution Role
+        if ! aws iam get-role --role-name ecsTaskExecutionRole >/dev/null 2>&1; then
+          echo "Creating ecsTaskExecutionRole..."
+          
+          # Create trust policy
+          cat > trust-policy.json << EOF
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "ecs-tasks.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        }
+        EOF
+          
+          aws iam create-role \
+            --role-name ecsTaskExecutionRole \
+            --assume-role-policy-document file://trust-policy.json
+            
+          aws iam attach-role-policy \
+            --role-name ecsTaskExecutionRole \
+            --policy-arn arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+            
+          echo "✅ ecsTaskExecutionRole created"
+        else
+          echo "✅ ecsTaskExecutionRole already exists"
+        fi
+        
+        # Create ECS Task Role
+        if ! aws iam get-role --role-name ecsTaskRole >/dev/null 2>&1; then
+          echo "Creating ecsTaskRole..."
+          
+          aws iam create-role \
+            --role-name ecsTaskRole \
+            --assume-role-policy-document file://trust-policy.json
+            
+          # Create basic task policy for application permissions
+          cat > task-policy.json << EOF
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": [
+                "logs:CreateLogStream",
+                "logs:PutLogEvents"
+              ],
+              "Resource": "*"
+            }
+          ]
+        }
+        EOF
+          
+          aws iam put-role-policy \
+            --role-name ecsTaskRole \
+            --policy-name ECSTaskPolicy \
+            --policy-document file://task-policy.json
+            
+          echo "✅ ecsTaskRole created"
+        else
+          echo "✅ ecsTaskRole already exists"
+        fi
+        
     - name: Create CloudWatch log group
       run: |
         echo "🔍 Creating CloudWatch log group..."
@@ -325,7 +397,60 @@ jobs:
         echo "Updated task definition:"
         cat task-definition.json
           
-    - name: Deploy to Amazon ECS service
+    - name: Register task definition
+      run: |
+        echo "📝 Registering task definition..."
+        aws ecs register-task-definition --cli-input-json file://task-definition.json
+        echo "✅ Task definition registered"
+        
+    - name: Create ECS service (if needed)
+      if: env.CREATE_SERVICE == 'true'
+      run: |
+        echo "🏗️ Creating ECS service..."
+        
+        # Get VPC and subnet info (assuming default VPC for now)
+        VPC_ID=$(aws ec2 describe-vpcs --filters "Name=is-default,Values=true" --query 'Vpcs[0].VpcId' --output text)
+        SUBNET_IDS=$(aws ec2 describe-subnets --filters "Name=vpc-id,Values=$VPC_ID" --query 'Subnets[*].SubnetId' --output text | tr '\t' ',')
+        
+        echo "Using VPC: $VPC_ID"
+        echo "Using Subnets: $SUBNET_IDS"
+        
+        # Create security group if it doesn't exist
+        SG_ID=$(aws ec2 describe-security-groups --filters "Name=group-name,Values=theobroma-api-sg" --query 'SecurityGroups[0].GroupId' --output text 2>/dev/null || echo "None")
+        
+        if [ "$SG_ID" = "None" ]; then
+          echo "Creating security group..."
+          SG_ID=$(aws ec2 create-security-group \
+            --group-name theobroma-api-sg \
+            --description "Security group for Theobroma API" \
+            --vpc-id $VPC_ID \
+            --query 'GroupId' --output text)
+            
+          # Allow HTTP traffic
+          aws ec2 authorize-security-group-ingress \
+            --group-id $SG_ID \
+            --protocol tcp \
+            --port 8000 \
+            --cidr 0.0.0.0/0
+            
+          echo "✅ Security group created: $SG_ID"
+        else
+          echo "✅ Using existing security group: $SG_ID"
+        fi
+        
+        # Create the ECS service
+        aws ecs create-service \
+          --cluster ${{ env.ECS_CLUSTER }} \
+          --service-name ${{ env.ECS_SERVICE }} \
+          --task-definition ${{ env.ECS_TASK_DEFINITION }} \
+          --desired-count 1 \
+          --launch-type FARGATE \
+          --network-configuration "awsvpcConfiguration={subnets=[$SUBNET_IDS],securityGroups=[$SG_ID],assignPublicIp=ENABLED}"
+          
+        echo "✅ ECS service created: ${{ env.ECS_SERVICE }}"
+        
+    - name: Update existing ECS service (if exists)
+      if: env.CREATE_SERVICE == 'false'
       uses: aws-actions/amazon-ecs-deploy-task-definition@v1
       with:
         task-definition: task-definition.json
