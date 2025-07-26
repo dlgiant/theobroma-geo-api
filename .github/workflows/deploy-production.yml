@@ -158,6 +158,12 @@ jobs:
           echo "CREATE_SERVICE=false" >> $GITHUB_ENV
         fi
         
+    - name: Create CloudWatch log group
+      run: |
+        echo "🔍 Creating CloudWatch log group..."
+        aws logs create-log-group --log-group-name "/ecs/${{ env.ECS_TASK_DEFINITION }}" 2>/dev/null || echo "Log group already exists"
+        echo "✅ CloudWatch log group ready"
+        
     - name: Create initial task definition
       if: env.CREATE_SERVICE == 'true'
       run: |
@@ -174,7 +180,7 @@ jobs:
           "containerDefinitions": [
             {
               "name": "${{ env.CONTAINER_NAME }}",
-              "image": "${{ needs.build-and-push.outputs.image-uri }}",
+              "image": "placeholder-image",
               "portMappings": [
                 {
                   "containerPort": 8000,
