@@ -49,6 +49,13 @@ jobs:
         echo "tag=$TAG" >> $GITHUB_OUTPUT
         echo "Using image tag: $TAG"
         
+    - name: Debug AWS secrets availability
+      run: |
+        echo "Checking AWS secrets availability..."
+        echo "AWS_ACCESS_KEY_ID exists: ${{ secrets.AWS_ACCESS_KEY_ID != '' }}"
+        echo "AWS_SECRET_ACCESS_KEY exists: ${{ secrets.AWS_SECRET_ACCESS_KEY != '' }}"
+        echo "AWS_ACCOUNT_ID exists: ${{ secrets.AWS_ACCOUNT_ID != '' }}"
+        
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v4
       with:
