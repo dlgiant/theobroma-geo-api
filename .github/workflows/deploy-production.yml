@@ -232,33 +232,51 @@ jobs:
           
         echo "✅ Current task definition downloaded"
         
-    - name: Debug task definition and image info
+    - name: Debug and update task definition with new image
       run: |
         echo "🔍 Debugging task definition and image info..."
-        echo "Image URI: ${{ needs.build-and-push.outputs.image-uri }}"
+        IMAGE_URI="${{ needs.build-and-push.outputs.image-uri }}"
+        echo "Image URI: $IMAGE_URI"
         echo "Container name: ${{ env.CONTAINER_NAME }}"
         echo "Task definition file exists: $(test -f task-definition.json && echo 'YES' || echo 'NO')"
-        if [ -f task-definition.json ]; then
-          echo "Task definition content:"
-          cat task-definition.json
+        
+        if [ -z "$IMAGE_URI" ]; then
+          echo "❌ Error: Image URI is empty!"
+          echo "Build job outputs:"
+          echo "  image-uri: ${{ needs.build-and-push.outputs.image-uri }}"
+          echo "  image-tag: ${{ needs.build-and-push.outputs.image-tag }}"
+          exit 1
         fi
         
-    - name: Update task definition with new image
-      id: task-def
-      uses: aws-actions/amazon-ecs-render-task-definition@v1
-      with:
-        task-definition: task-definition.json
-        container-name: ${{ env.CONTAINER_NAME }}
-        image: ${{ needs.build-and-push.outputs.image-uri }}
-        environment-variables: |
-          ENVIRONMENT=production
-          LOG_LEVEL=INFO
-          AWS_REGION=${{ env.AWS_REGION }}
+        if [ ! -f task-definition.json ]; then
+          echo "❌ Error: task-definition.json file not found!"
+          exit 1
+        fi
+        
+        echo "✅ Updating task definition with image: $IMAGE_URI"
+        
+        # Use jq to update the task definition with the new image
+        jq --arg IMAGE "$IMAGE_URI" \
+           '.containerDefinitions[0].image = $IMAGE' \
+           task-definition.json > updated-task-definition.json
+           
+        # Also update environment variables
+        jq '.containerDefinitions[0].environment += [
+             {"name": "ENVIRONMENT", "value": "production"},
+             {"name": "LOG_LEVEL", "value": "INFO"},
+             {"name": "AWS_REGION", "value": "${{ env.AWS_REGION }}"}
+           ]' updated-task-definition.json > final-task-definition.json
+        
+        mv final-task-definition.json task-definition.json
+        
+        echo "✅ Task definition updated successfully"
+        echo "Updated task definition:"
+        cat task-definition.json
           
     - name: Deploy to Amazon ECS service
       uses: aws-actions/amazon-ecs-deploy-task-definition@v1
       with:
-        task-definition: ${{ steps.task-def.outputs.task-definition }}
+        task-definition: task-definition.json
         service: ${{ env.ECS_SERVICE }}
         cluster: ${{ env.ECS_CLUSTER }}
         wait-for-service-stability: true
