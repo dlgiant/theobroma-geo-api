@@ -89,7 +89,7 @@ async def root():
     """Root endpoint with API information"""
     return {
         "message": "Theobroma Digital API",
-        "version": "1.0.0",
+        "version": "1.0.1",
         "description": "Microservice for cocoa plantation monitoring",
         "endpoints": [
             "/lots - Get plantation lots summary",
