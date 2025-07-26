@@ -12,3 +12,6 @@ sqlalchemy==2.0.23
 geoalchemy2==0.14.2
 alembic==1.13.1
 python-dotenv==1.0.0
+requests==2.31.0
+pytest==7.4.3
+pytest-asyncio==0.21.1

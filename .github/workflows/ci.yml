@@ -40,18 +40,18 @@ jobs:
     - name: Check code formatting with Black
       run: |
         echo "Checking code formatting..."
-        black --check --diff *.py
+        black --check --config pyproject.toml .
         
     - name: Check import sorting with isort
       run: |
         echo "Checking import sorting..."
-        isort --check-only --diff *.py
+        isort --check-only --settings-path=pyproject.toml .
         
     - name: Lint with flake8
       run: |
         echo "Running flake8 linting..."
-        flake8 *.py --count --select=E9,F63,F7,F82 --show-source --statistics
-        flake8 *.py --count --exit-zero --max-complexity=10 --max-line-length=88 --statistics
+        flake8 --config=.flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+        flake8 --config=.flake8 . --count --exit-zero --max-complexity=10 --statistics
         
     - name: Type checking with mypy (optional)
       run: |
@@ -104,7 +104,10 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
-        pip install pytest pytest-asyncio pytest-cov httpx
+        pip install pytest pytest-asyncio pytest-cov httpx requests
+        # Install PostgreSQL client
+        sudo apt-get update
+        sudo apt-get install -y postgresql-client
         
     - name: Set up test environment
       env:
@@ -119,6 +122,10 @@ jobs:
           sleep 1
         done
         >&2 echo "PostgreSQL is up - executing command"
+        
+    - name: Setup PostGIS
+      run: |
+        PGPASSWORD=test_password psql -h localhost -U test_user -d test_theobroma -c "CREATE EXTENSION IF NOT EXISTS postgis;"
         
     - name: Initialize test database
       env:
@@ -140,37 +147,8 @@ jobs:
       env:
         DATABASE_URL: postgresql://test_user:test_password@localhost:5432/test_theobroma
       run: |
-        # Basic API health check test
-        python -c "
-        import asyncio
-        import sys
-        from fastapi.testclient import TestClient
-        from main import app
-        
-        def test_health_endpoint():
-            client = TestClient(app)
-            response = client.get('/health')
-            assert response.status_code == 200
-            data = response.json()
-            assert 'uptime_seconds' in data
-            print('✅ Health endpoint test passed')
-            
-        def test_farms_endpoint():
-            client = TestClient(app)
-            response = client.get('/farms')
-            assert response.status_code == 200
-            data = response.json()
-            assert 'farms' in data
-            print('✅ Farms endpoint test passed')
-            
-        try:
-            test_health_endpoint()
-            test_farms_endpoint()
-            print('✅ All API tests passed')
-        except Exception as e:
-            print(f'❌ API tests failed: {e}')
-            sys.exit(1)
-        "
+        # Run pytest for comprehensive testing
+        pytest test_api.py -v --tb=short
         
     - name: Run performance tests
       env:

@@ -4,6 +4,7 @@ from datetime import datetime
 from typing import List, Optional
 
 from dotenv import load_dotenv
+from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI, HTTPException, Path, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -44,6 +45,25 @@ from services import (
 # Load environment variables
 load_dotenv()
 
+start_time = time.time()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Manage application lifespan events"""
+    # Startup
+    try:
+        if not test_connection():
+            print("⚠️  Database connection failed, but continuing...")
+    except Exception as e:
+        print(f"⚠️  Database initialization error: {e}, continuing...")
+    
+    yield
+    
+    # Shutdown (if needed)
+    # Any cleanup code can go here
+
+
 # Initialize FastAPI app
 app = FastAPI(
     title="Theobroma Digital API",
@@ -51,6 +71,7 @@ app = FastAPI(
     version="1.0.0",
     docs_url="/docs",
     redoc_url="/redoc",
+    lifespan=lifespan,
 )
 
 # CORS middleware for frontend integration
@@ -61,16 +82,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-start_time = time.time()
-
-
-# Database startup event
-@app.on_event("startup")
-async def startup_event():
-    """Initialize database connection on startup"""
-    if not test_connection():
-        raise Exception("Failed to connect to database")
 
 
 @app.get("/", response_model=dict)
