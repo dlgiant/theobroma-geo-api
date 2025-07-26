@@ -320,9 +320,13 @@ jobs:
       run: |
         aws ecs describe-task-definition \
           --task-definition ${{ env.ECS_TASK_DEFINITION }} \
-          --query taskDefinition > task-definition.json
+          --query taskDefinition > raw-task-definition.json
           
-        echo "✅ Current task definition downloaded"
+        # Clean the task definition by removing AWS-added fields
+        jq 'del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)' \
+           raw-task-definition.json > task-definition.json
+           
+        echo "✅ Current task definition downloaded and cleaned"
         
     - name: Debug and update task definition with new image
       run: |
