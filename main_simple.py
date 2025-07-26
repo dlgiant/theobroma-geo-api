@@ -1,5 +1,6 @@
 import time
 from datetime import datetime
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -23,6 +24,7 @@ app.add_middleware(
 
 start_time = time.time()
 
+
 @app.get("/")
 async def root():
     """Root endpoint with API information"""
@@ -31,8 +33,9 @@ async def root():
         "version": "1.0.0",
         "description": "Microservice for cocoa plantation monitoring",
         "status": "healthy",
-        "timestamp": datetime.now().isoformat()
+        "timestamp": datetime.now().isoformat(),
     }
+
 
 @app.get("/health")
 async def health_check():
@@ -44,8 +47,9 @@ async def health_check():
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
         "version": "1.0.0",
-        "uptime_seconds": round(uptime, 2)
+        "uptime_seconds": round(uptime, 2),
     }
+
 
 @app.get("/farms")
 async def get_farms():
@@ -58,11 +62,12 @@ async def get_farms():
                 "location": "Test Location",
                 "total_lots": 5,
                 "total_trees": 1000,
-                "status": "healthy"
+                "status": "healthy",
             }
         ],
-        "total_farms": 1
+        "total_farms": 1,
     }
+
 
 @app.get("/trees")
 async def get_trees():
@@ -74,11 +79,12 @@ async def get_trees():
                 "farm_id": "farm_001",
                 "lot_id": 1,
                 "status": "healthy",
-                "maturity": 75.5
+                "maturity": 75.5,
             }
         ],
-        "total_trees": 1
+        "total_trees": 1,
     }
+
 
 @app.get("/lots")
 async def get_lots():
@@ -87,14 +93,15 @@ async def get_lots():
         "lots": [
             {
                 "lot_id": 1,
-                "farm_id": "farm_001", 
+                "farm_id": "farm_001",
                 "total_trees": 200,
                 "healthy_trees": 180,
-                "avg_maturity": 75.5
+                "avg_maturity": 75.5,
             }
         ],
-        "total_lots": 1
+        "total_lots": 1,
     }
+
 
 @app.get("/security-events")
 async def get_security_events():
@@ -106,11 +113,12 @@ async def get_security_events():
                 "type": "test_event",
                 "severity": "low",
                 "timestamp": datetime.now().isoformat(),
-                "resolved": False
+                "resolved": False,
             }
         ],
-        "total_events": 1
+        "total_events": 1,
     }
+
 
 @app.get("/metrics")
 async def get_metrics():
@@ -120,5 +128,5 @@ async def get_metrics():
         "uptime_seconds": round(time.time() - start_time, 2),
         "status": "healthy",
         "requests_processed": 42,
-        "timestamp": datetime.now().isoformat()
+        "timestamp": datetime.now().isoformat(),
     }

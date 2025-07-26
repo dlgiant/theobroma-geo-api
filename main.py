@@ -28,7 +28,9 @@ from models import (
     LotsResponse,
     SecurityEventsResponse,
     SecurityLevel,
-    Tree,
+)
+from models import Tree as TreeModel
+from models import (
     WeatherResponse,
 )
 from services import (
@@ -124,7 +126,7 @@ async def get_lots_summary(
 
     except Exception as e:
         raise HTTPException(
-            status_code=500, detail="Error fetching lots data: {str(e)}"
+            status_code=500, detail=f"Error fetching lots data: {str(e)}"
         )
 
 
@@ -163,7 +165,7 @@ async def get_security_events(
 
     except Exception as e:
         raise HTTPException(
-            status_code=500, detail="Error fetching security events: {str(e)}"
+            status_code=500, detail=f"Error fetching security events: {str(e)}"
         )
 
 
@@ -190,7 +192,7 @@ async def get_weather_data(
 
     except Exception as e:
         raise HTTPException(
-            status_code=500, detail="Error fetching weather data: {str(e)}"
+            status_code=500, detail=f"Error fetching weather data: {str(e)}"
         )
 
 
@@ -221,7 +223,7 @@ async def get_production_analytics(
 
     except Exception as e:
         raise HTTPException(
-            status_code=500, detail="Error generating production analytics: {str(e)}"
+            status_code=500, detail=f"Error generating production analytics: {str(e)}"
         )
 
 
@@ -377,7 +379,7 @@ async def get_lot_trees(
 
     except Exception as e:
         raise HTTPException(
-            status_code=500, detail="Error fetching trees data: {str(e)}"
+            status_code=500, detail=f"Error fetching trees data: {str(e)}"
         )
 
 

@@ -87,7 +87,7 @@ class FarmService:
             available_farms = [f.slug for f in db.query(Farm).all()]
             raise HTTPException(
                 status_code=404,
-                detail="Farm '{farm_id}' not found. Available farms: {available_farms}",
+                detail=f"Farm '{farm_id}' not found. Available farms: {available_farms}",
             )
         return farm
 
