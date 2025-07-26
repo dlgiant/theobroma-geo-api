@@ -16,12 +16,14 @@ client = TestClient(app)
 TEST_DATABASE_URL = os.getenv("DATABASE_URL")
 has_database = TEST_DATABASE_URL is not None
 
+
 def check_database_available():
     """Check if database is available for testing"""
     if not has_database:
         return False
     try:
         from database import test_connection
+
         return test_connection()
     except Exception:
         return False
@@ -31,7 +33,7 @@ def test_health_endpoint():
     """Test the health endpoint returns 200 and expected structure"""
     response = client.get("/health")
     assert response.status_code == 200
-    
+
     data = response.json()
     assert "status" in data
     assert "uptime_seconds" in data
@@ -45,7 +47,7 @@ def test_root_endpoint():
     """Test the root endpoint returns API information"""
     response = client.get("/")
     assert response.status_code == 200
-    
+
     data = response.json()
     assert "message" in data
     assert "version" in data
@@ -59,10 +61,10 @@ def test_farms_endpoint():
     """Test the farms endpoint returns proper structure"""
     if not check_database_available():
         pytest.skip("Database connection not available")
-        
+
     response = client.get("/farms")
     assert response.status_code == 200
-    
+
     data = response.json()
     assert "farms" in data
     assert "total_farms" in data
@@ -82,7 +84,7 @@ def test_openapi_spec():
     """Test the OpenAPI specification endpoint"""
     response = client.get("/openapi.json")
     assert response.status_code == 200
-    
+
     data = response.json()
     assert "openapi" in data
     assert "info" in data

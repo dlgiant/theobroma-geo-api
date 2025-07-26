@@ -1,10 +1,10 @@
 import os
 import time
+from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import List, Optional
 
 from dotenv import load_dotenv
-from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI, HTTPException, Path, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -57,9 +57,9 @@ async def lifespan(app: FastAPI):
             print("⚠️  Database connection failed, but continuing...")
     except Exception as e:
         print(f"⚠️  Database initialization error: {e}, continuing...")
-    
+
     yield
-    
+
     # Shutdown (if needed)
     # Any cleanup code can go here
 
