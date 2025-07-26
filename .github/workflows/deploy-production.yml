@@ -218,6 +218,7 @@ jobs:
         echo "✅ Initial task definition created"
         
     - name: Download current task definition
+      if: env.CREATE_SERVICE == 'false'
       run: |
         aws ecs describe-task-definition \
           --task-definition ${{ env.ECS_TASK_DEFINITION }} \
