@@ -255,17 +255,49 @@ jobs:
     - name: Debug and update task definition with new image
       run: |
         echo "🔍 Debugging task definition and image info..."
+        echo "Build job result: ${{ needs.build-and-push.result }}"
+        echo "Build job outputs available:"
+        echo "  image-uri: '${{ needs.build-and-push.outputs.image-uri }}'"
+        echo "  image-tag: '${{ needs.build-and-push.outputs.image-tag }}'"
+        
         IMAGE_URI="${{ needs.build-and-push.outputs.image-uri }}"
-        echo "Image URI: $IMAGE_URI"
+        IMAGE_TAG="${{ needs.build-and-push.outputs.image-tag }}"
+        
+        echo "Image URI: '$IMAGE_URI'"
+        echo "Image TAG: '$IMAGE_TAG'"
         echo "Container name: ${{ env.CONTAINER_NAME }}"
         echo "Task definition file exists: $(test -f task-definition.json && echo 'YES' || echo 'NO')"
         
-        if [ -z "$IMAGE_URI" ]; then
-          echo "❌ Error: Image URI is empty!"
-          echo "Build job outputs:"
-          echo "  image-uri: ${{ needs.build-and-push.outputs.image-uri }}"
-          echo "  image-tag: ${{ needs.build-and-push.outputs.image-tag }}"
+        # Check if build job failed
+        if [ "${{ needs.build-and-push.result }}" != "success" ]; then
+          echo "❌ Build job failed with status: ${{ needs.build-and-push.result }}"
           exit 1
+        fi
+        
+        # Try to construct image URI if empty
+        if [ -z "$IMAGE_URI" ]; then
+          echo "⚠️ Image URI is empty, attempting to construct it..."
+          
+          # Get AWS account ID
+          AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          if [ -n "$AWS_ACCOUNT_ID" ] && [ -n "$IMAGE_TAG" ]; then
+            CONSTRUCTED_IMAGE_URI="$AWS_ACCOUNT_ID.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}:$IMAGE_TAG"
+            echo "Constructed Image URI: $CONSTRUCTED_IMAGE_URI"
+            
+            # Verify the image exists in ECR
+            if aws ecr describe-images --repository-name ${{ env.ECR_REPOSITORY }} --image-ids imageTag=$IMAGE_TAG > /dev/null 2>&1; then
+              IMAGE_URI="$CONSTRUCTED_IMAGE_URI"
+              echo "✅ Using constructed image URI: $IMAGE_URI"
+            else
+              echo "❌ Constructed image does not exist in ECR"
+              exit 1
+            fi
+          else
+            echo "❌ Cannot construct image URI - missing AWS account ID or image tag"
+            echo "AWS_ACCOUNT_ID: $AWS_ACCOUNT_ID"
+            echo "IMAGE_TAG: $IMAGE_TAG"
+            exit 1
+          fi
         fi
         
         if [ ! -f task-definition.json ]; then
