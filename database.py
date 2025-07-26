@@ -255,5 +255,5 @@ def test_connection():
             connection.execute(text("SELECT 1"))
             return True
     except Exception as e:
-        print("Database connection failed: {e}")
+        print(f"Database connection failed: {e}")
         return False

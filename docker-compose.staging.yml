@@ -1,0 +1,51 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgis/postgis:13-3.1
+    container_name: theobroma-staging-postgres
+    environment:
+      POSTGRES_DB: theobroma_geo_staging
+      POSTGRES_USER: theobroma_admin
+      POSTGRES_PASSWORD: TheobromaGeo2024!
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - theobroma-staging
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U theobroma_admin -d theobroma_geo_staging"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: theobroma-geo-api:staging
+    container_name: theobroma-staging-api
+    environment:
+      DATABASE_URL: postgresql://theobroma_admin:TheobromaGeo2024!@postgres:5432/theobroma_geo_staging
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - theobroma-staging
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8000/health', timeout=5.0)"]
+      interval: 30s
+      timeout: 30s
+      retries: 3
+      start_period: 40s
+
+volumes:
+  postgres_data:
+
+networks:
+  theobroma-staging:
+    external: true
