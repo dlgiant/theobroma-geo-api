@@ -232,6 +232,17 @@ jobs:
           
         echo "✅ Current task definition downloaded"
         
+    - name: Debug task definition and image info
+      run: |
+        echo "🔍 Debugging task definition and image info..."
+        echo "Image URI: ${{ needs.build-and-push.outputs.image-uri }}"
+        echo "Container name: ${{ env.CONTAINER_NAME }}"
+        echo "Task definition file exists: $(test -f task-definition.json && echo 'YES' || echo 'NO')"
+        if [ -f task-definition.json ]; then
+          echo "Task definition content:"
+          cat task-definition.json
+        fi
+        
     - name: Update task definition with new image
       id: task-def
       uses: aws-actions/amazon-ecs-render-task-definition@v1
