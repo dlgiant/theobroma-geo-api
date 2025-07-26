@@ -144,6 +144,9 @@ class HealthResponse(BaseModel):
     timestamp: datetime = Field(default_factory=datetime.now)
     version: str = "1.0.0"
     uptime_seconds: float
+    database: Optional[str] = None
+    environment: Optional[str] = None
+    database_url_set: Optional[bool] = None
 
 
 class ErrorResponse(BaseModel):

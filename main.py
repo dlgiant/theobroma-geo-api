@@ -108,7 +108,29 @@ async def health_check():
     Health check endpoint to monitor API status
     """
     uptime = time.time() - start_time
-    return HealthResponse(uptime_seconds=round(uptime, 2))
+    
+    # Basic health response
+    health_data = {
+        "status": "healthy",
+        "timestamp": datetime.now().isoformat(),
+        "uptime_seconds": round(uptime, 2),
+    }
+    
+    # Try to check database connectivity
+    try:
+        db_connected = test_connection()
+        health_data["database"] = "connected" if db_connected else "disconnected"
+        if not db_connected:
+            health_data["status"] = "degraded"
+    except Exception as e:
+        health_data["database"] = f"error: {str(e)}"
+        health_data["status"] = "degraded"
+    
+    # Add environment info for debugging
+    health_data["environment"] = os.getenv("ENVIRONMENT", "unknown")
+    health_data["database_url_set"] = bool(os.getenv("DATABASE_URL"))
+    
+    return HealthResponse(**health_data)
 
 
 @app.get("/farms/{farm_id}/lots", response_model=LotsResponse, tags=["Plantation"])
