@@ -55,6 +55,22 @@ jobs:
         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
+        role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+        role-session-name: GitHub-Actions-Deploy
+        mask-aws-account-id: false
+        
+    - name: Verify AWS credentials
+      run: |
+        echo "🔍 Verifying AWS credentials and permissions..."
+        aws sts get-caller-identity
+        echo "✅ AWS credentials verified"
+        
+    - name: Create ECR repository if not exists
+      run: |
+        echo "🏗️ Ensuring ECR repository exists..."
+        aws ecr describe-repositories --repository-names $ECR_REPOSITORY 2>/dev/null || \
+        aws ecr create-repository --repository-name $ECR_REPOSITORY --region $AWS_REGION
+        echo "✅ ECR repository ready: $ECR_REPOSITORY"
         
     - name: Login to Amazon ECR
       id: login-ecr
@@ -114,6 +130,87 @@ jobs:
         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
+        
+    - name: Verify ECS infrastructure
+      run: |
+        echo "🔍 Verifying ECS infrastructure..."
+        
+        # Check if ECS cluster exists
+        if ! aws ecs describe-clusters --clusters ${{ env.ECS_CLUSTER }} --query 'clusters[0].status' --output text 2>/dev/null | grep -q ACTIVE; then
+          echo "❌ ECS cluster ${{ env.ECS_CLUSTER }} not found or not active"
+          echo "Please create the ECS cluster first:"
+          echo "aws ecs create-cluster --cluster-name ${{ env.ECS_CLUSTER }}"
+          exit 1
+        fi
+        echo "✅ ECS cluster verified: ${{ env.ECS_CLUSTER }}"
+        
+        # Check if ECS service exists
+        if ! aws ecs describe-services --cluster ${{ env.ECS_CLUSTER }} --services ${{ env.ECS_SERVICE }} --query 'services[0].status' --output text 2>/dev/null | grep -q ACTIVE; then
+          echo "⚠️ ECS service ${{ env.ECS_SERVICE }} not found - will create initial task definition"
+          echo "CREATE_SERVICE=true" >> $GITHUB_ENV
+        else
+          echo "✅ ECS service verified: ${{ env.ECS_SERVICE }}"
+          echo "CREATE_SERVICE=false" >> $GITHUB_ENV
+        fi
+        
+    - name: Create initial task definition
+      if: env.CREATE_SERVICE == 'true'
+      run: |
+        echo "🏗️ Creating initial task definition..."
+        cat > task-definition.json << EOF
+        {
+          "family": "${{ env.ECS_TASK_DEFINITION }}",
+          "networkMode": "awsvpc",
+          "requiresCompatibilities": ["FARGATE"],
+          "cpu": "512",
+          "memory": "1024",
+          "executionRoleArn": "arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/ecsTaskExecutionRole",
+          "taskRoleArn": "arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/ecsTaskRole",
+          "containerDefinitions": [
+            {
+              "name": "${{ env.CONTAINER_NAME }}",
+              "image": "${{ needs.build-and-push.outputs.image-uri }}",
+              "portMappings": [
+                {
+                  "containerPort": 8000,
+                  "protocol": "tcp"
+                }
+              ],
+              "essential": true,
+              "environment": [
+                {
+                  "name": "ENVIRONMENT",
+                  "value": "production"
+                },
+                {
+                  "name": "LOG_LEVEL",
+                  "value": "INFO"
+                },
+                {
+                  "name": "DATABASE_URL",
+                  "value": "${{ secrets.PRODUCTION_DATABASE_URL }}"
+                }
+              ],
+              "logConfiguration": {
+                "logDriver": "awslogs",
+                "options": {
+                  "awslogs-group": "/ecs/${{ env.ECS_TASK_DEFINITION }}",
+                  "awslogs-region": "${{ env.AWS_REGION }}",
+                  "awslogs-stream-prefix": "ecs"
+                }
+              },
+              "healthCheck": {
+                "command": ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"],
+                "interval": 30,
+                "timeout": 5,
+                "retries": 3,
+                "startPeriod": 60
+              }
+            }
+          ]
+        }
+        EOF
+        echo "✅ Initial task definition created"
         
     - name: Download current task definition
       run: |
