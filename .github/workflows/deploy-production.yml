@@ -16,7 +16,7 @@ on:
         - staging
 
 env:
-  AWS_REGION: us-east-1
+  AWS_REGION: us-east-2
   ECR_REPOSITORY: theobroma-geo-api
   ECS_SERVICE: theobroma-geo-api-service
   ECS_CLUSTER: theobroma-production
